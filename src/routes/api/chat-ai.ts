@@ -1587,6 +1587,9 @@ export const Route = createFileRoute("/api/chat-ai")({
             conversationOrderRows = rows;
             latestConversationOrder = rows.length ? rows[0]! : null;
             if (rows.length) {
+              const { hasPendingAddition, pendingItemsOf, pendingTotalsOf } = await import(
+                "@/lib/order-pending-additions"
+              );
 
               const lines = rows.map((o) => {
                 const items = Array.isArray(o.items) ? (o.items as Array<Record<string, unknown>>) : [];
@@ -1594,26 +1597,50 @@ export const Route = createFileRoute("/api/chat-ai")({
                 const productName =
                   first && typeof first.product_name === "string" ? first.product_name : "-";
                 const paid = String(o.payment_status ?? "confirmed") !== "pending";
+                const pendingLines = hasPendingAddition(o as any)
+                  ? pendingItemsOf(o as any)
+                      .map((it) =>
+                        [it["product_name"], it["color"], it["size"]]
+                          .filter(Boolean)
+                          .join(" ") + ` x${it["quantity"]}`,
+                      )
+                      .join(", ")
+                  : "";
                 return (
                   `Order Number: ${o.order_number ?? "-"} | Product: ${productName} | Status: ${o.status ?? "-"}` +
                   ` | Payment method: ${o.payment_method ?? "-"}` +
                   ` | Payment: ${paid ? "CONFIRMED (paid)" : "PENDING (not paid yet)"}` +
-                  (o.total_price != null ? ` | Total: ${o.total_price}` : "")
+                  (o.total_price != null ? ` | Total (paid part): ${o.total_price}` : "") +
+                  (pendingLines
+                    ? ` | UNPAID ADDITION (waiting for payment confirmation): ${pendingLines} | Addition amount: ${pendingTotalsOf(o as any).total}`
+                    : "")
                 );
               });
               const justConfirmed = rows.filter(
                 (o) => String(o.payment_status ?? "confirmed") !== "pending",
               );
+              const withPendingAddition = rows.filter((o) => hasPendingAddition(o as any));
               existingOrdersBlock =
                 "\n\nExisting orders in this conversation (live state, always trust this over the chat history):\n" +
                 lines.join("\n") +
                 (justConfirmed.length
                   ? "\n\nPAYMENT STATE: the store team has ALREADY confirmed the payment of " +
                     justConfirmed.map((o) => String(o.order_number ?? "-")).join(", ") +
-                    ". Treat these orders as fully confirmed and paid: never ask the customer to pay again, never ask for a transfer screenshot again, never ask them to confirm the order again, and never say the order is still waiting for payment. If they ask, reassure them that the payment arrived and the order is being processed."
+                    ". Treat the ALREADY PAID part of these orders as fully confirmed: never ask the customer to pay it again, never ask for a transfer screenshot for it again, never ask them to confirm it again, and never say that part is still waiting for payment. If they ask, reassure them that the payment arrived and the order is being processed."
+                  : "") +
+                (withPendingAddition.length
+                  ? "\n\nUNPAID ADDITION: " +
+                    withPendingAddition
+                      .map(
+                        (o) =>
+                          `${o.order_number ?? "-"} (${pendingTotalsOf(o as any).total})`,
+                      )
+                      .join(", ") +
+                    ". This part was added AFTER the payment was confirmed, so it is NOT paid. Only its own amount is due — never re-ask for the already paid amount, and never treat the addition as paid until the store confirms it."
                   : "") +
                 "\nNever create a second order for an order listed here. If the customer asks to add products, update that same order through create_order.";
             }
+
           }
 
           // Full per-order knowledge for THIS customer (all their orders).
