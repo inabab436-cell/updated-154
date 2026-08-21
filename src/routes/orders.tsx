@@ -164,14 +164,19 @@ function OrdersPage() {
     onError: (e) => toast.error(e instanceof Error ? e.message : "فشل تأكيد الدفع."),
   });
 
-  /** Fulfilment (تجهيز/شحن/تسليم) is blocked until the payment is confirmed. */
+  /**
+   * Fulfilment (تجهيز/شحن/تسليم) is blocked until the payment is confirmed —
+   * including the payment of a later, still unpaid addition.
+   */
   const guardedStatus = (o: OrderRow, status: "prepared" | "shipped" | "delivered") => {
-    if (!canStartFulfillment(o.payment_status)) {
-      toast.error(PAYMENT_REQUIRED_MESSAGE);
+    const gate = canStartFulfillmentForOrder(o);
+    if (!gate.ok) {
+      toast.error(gate.message);
       return;
     }
     statusMut.mutate({ id: o.id, status });
   };
+
 
   const rows: OrderRow[] = q.data ?? [];
 
