@@ -44,12 +44,19 @@ export interface OrderRow {
   /** 'pending' = manual payment not confirmed yet → no stock deducted. */
   payment_status: string;
   payment_confirmed_at: string | null;
-  /** Final value of the order: products − discount + shipping. */
+  /** Final value of the CONFIRMED (paid) part: products − discount + shipping. */
   total_price: number | null;
   subtotal_price: number | null;
   discount_amount: number | null;
   shipping_cost: number | null;
+  /** Lines added AFTER the payment was confirmed — not paid, not deducted. */
+  pending_items?: OrderItem[];
+  pending_subtotal?: number | null;
+  pending_discount?: number | null;
+  pending_total?: number | null;
+  pending_since?: string | null;
 }
+
 
 
 
