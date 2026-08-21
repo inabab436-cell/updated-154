@@ -258,29 +258,39 @@ function OrdersPage() {
                           </span>
                         </td>
                         <td className="px-4 py-3">
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                              o.payment_status === "pending"
-                                ? "bg-amber-100 text-amber-800"
-                                : "bg-emerald-100 text-emerald-800"
-                            }`}
-                            title={o.payment_method ?? ""}
-                          >
-                            {o.payment_status === "pending" ? "بانتظار الدفع" : "مدفوع"}
-                          </span>
+                          <div className="flex flex-col items-start gap-1">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                                o.payment_status === "pending"
+                                  ? "bg-amber-100 text-amber-800"
+                                  : "bg-emerald-100 text-emerald-800"
+                              }`}
+                              title={o.payment_method ?? ""}
+                            >
+                              {o.payment_status === "pending" ? "بانتظار الدفع" : "مدفوع"}
+                            </span>
+                            {hasPendingAddition(o) && (
+                              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800">
+                                إضافة بانتظار الدفع
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">{fmtDate(o.created_at)}</td>
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap gap-1.5">
-                            {o.payment_status === "pending" && o.status !== "cancelled" && (
+                            {(o.payment_status === "pending" || hasPendingAddition(o)) &&
+                              o.status !== "cancelled" && (
                               <Button
                                 size="sm"
                                 disabled={payMut.isPending}
                                 onClick={() => payMut.mutate({ id: o.id })}
                               >
-                                <BadgeCheck className="ml-1 h-3.5 w-3.5" /> تأكيد الدفع
+                                <BadgeCheck className="ml-1 h-3.5 w-3.5" />{" "}
+                                {o.payment_status === "pending" ? "تأكيد الدفع" : "تأكيد دفع الإضافة"}
                               </Button>
                             )}
+
                             <Button
                               size="sm"
                               variant="outline"
