@@ -1349,20 +1349,31 @@ export const Route = createFileRoute("/api/chat-ai")({
           })();
 
           const conversationOrdersPromise = (async () => {
-            try {
-              const { data: orders } = await supabase
+            const base =
+              "order_number, items, notes, status, payment_status, payment_method, payment_confirmed_at, subtotal_price, discount_amount, shipping_cost, total_price, created_at, stock_deducted";
+            const read = (columns: string) =>
+              supabase
                 .from("orders")
-                .select(
-                  "order_number, items, notes, status, payment_status, payment_method, payment_confirmed_at, subtotal_price, discount_amount, shipping_cost, total_price, created_at, stock_deducted",
-                )
+                .select(columns)
                 .eq("conversation_id", conversation_id)
                 .order("created_at", { ascending: false });
-              return (orders ?? []) as Array<Record<string, unknown>>;
+            try {
+              // Databases that already carry the unpaid-addition columns expose
+              // the pending part; older ones fall back to the base columns.
+              const withPending = await read(
+                `${base}, pending_items, pending_subtotal, pending_discount, pending_total, pending_since`,
+              );
+              if (!withPending.error) {
+                return (withPending.data ?? []) as unknown as Array<Record<string, unknown>>;
+              }
+              const { data: orders } = await read(base);
+              return (orders ?? []) as unknown as Array<Record<string, unknown>>;
             } catch (_) {
               // orders table may not exist; skip silently.
               return [] as Array<Record<string, unknown>>;
             }
           })();
+
 
           // ALL orders of THIS customer (any conversation), with every detail
           // the agent may be asked about. Scoped to (merchant_id, customer_id)
