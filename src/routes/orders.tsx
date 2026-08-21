@@ -18,7 +18,12 @@ import {
   setOrderStatusMessages,
   type OrderRow,
 } from "@/lib/orders.functions";
-import { PAYMENT_REQUIRED_MESSAGE, canStartFulfillment } from "@/lib/order-status-gate";
+import { canStartFulfillmentForOrder } from "@/lib/order-status-gate";
+import {
+  hasPendingAddition,
+  pendingItemsOf,
+} from "@/lib/order-pending-additions";
+
 
 export const Route = createFileRoute("/orders")({
   head: () => ({
