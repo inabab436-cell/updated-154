@@ -85,6 +85,9 @@ function OrderValue({ order }: { order: OrderRow }) {
   const value = total ?? subtotal;
   const percent = discount > 0 && subtotal > 0 ? Math.round((discount / subtotal) * 100) : 0;
 
+  const pendingTotal = Number(order.pending_total ?? 0) || 0;
+  const pendingDiscount = Number(order.pending_discount ?? 0) || 0;
+
   return (
     <div className="leading-tight">
       <div className="font-semibold">
@@ -96,9 +99,16 @@ function OrderValue({ order }: { order: OrderRow }) {
           {percent > 0 ? ` (${percent}%)` : ""}
         </div>
       )}
+      {hasPendingAddition(order) && (
+        <div className="text-[11px] font-medium text-amber-700">
+          + إضافة بانتظار الدفع: {fmtMoney(pendingTotal)} {currency}
+          {pendingDiscount > 0 ? ` (بعد خصم ${fmtMoney(pendingDiscount)})` : ""}
+        </div>
+      )}
     </div>
   );
 }
+
 
 
 
