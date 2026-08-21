@@ -365,6 +365,39 @@ function OrdersPage() {
                                 </tbody>
                               </table>
                             </div>
+                            {hasPendingAddition(o) && (
+                              <>
+                                <div className="mt-4 mb-2 text-[11px] font-semibold uppercase tracking-wider text-amber-700">
+                                  إضافة بانتظار تأكيد الدفع
+                                </div>
+                                <div className="overflow-x-auto rounded-lg border border-amber-300/70 bg-amber-50/40">
+                                  <table className="w-full text-right text-xs">
+                                    <thead className="bg-amber-100/60 text-[10px] uppercase text-amber-800">
+                                      <tr>
+                                        <th className="px-3 py-2">المنتج</th>
+                                        <th className="px-3 py-2">اللون</th>
+                                        <th className="px-3 py-2">المقاس</th>
+                                        <th className="px-3 py-2">الكمية</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-amber-200/70">
+                                      {pendingItemsOf(o).map((it, i) => (
+                                        <tr key={i}>
+                                          <td className="px-3 py-2 font-medium">{String(it.product_name ?? "—")}</td>
+                                          <td className="px-3 py-2">{String(it.color ?? "—")}</td>
+                                          <td className="px-3 py-2">{String(it.size ?? "—")}</td>
+                                          <td className="px-3 py-2">{String(it.quantity ?? "—")}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                                <div className="mt-2 text-[11px] text-amber-700">
+                                  قيمة الإضافة: {fmtMoney(Number(o.pending_total ?? 0))} — لا يُخصم مخزونها ولا تُحتسب مدفوعة قبل تأكيد الدفع.
+                                </div>
+                              </>
+                            )}
+
                             <div className="mt-3 grid gap-3 sm:grid-cols-2">
                               <div>
                                 <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">ملاحظات العميل</div>
