@@ -18,7 +18,12 @@ import {
   setOrderStatusMessages,
   type OrderRow,
 } from "@/lib/orders.functions";
-import { PAYMENT_REQUIRED_MESSAGE, canStartFulfillment } from "@/lib/order-status-gate";
+import { canStartFulfillmentForOrder } from "@/lib/order-status-gate";
+import {
+  hasPendingAddition,
+  pendingItemsOf,
+} from "@/lib/order-pending-additions";
+
 
 export const Route = createFileRoute("/orders")({
   head: () => ({
@@ -85,6 +90,9 @@ function OrderValue({ order }: { order: OrderRow }) {
   const value = total ?? subtotal;
   const percent = discount > 0 && subtotal > 0 ? Math.round((discount / subtotal) * 100) : 0;
 
+  const pendingTotal = Number(order.pending_total ?? 0) || 0;
+  const pendingDiscount = Number(order.pending_discount ?? 0) || 0;
+
   return (
     <div className="leading-tight">
       <div className="font-semibold">
@@ -96,9 +104,16 @@ function OrderValue({ order }: { order: OrderRow }) {
           {percent > 0 ? ` (${percent}%)` : ""}
         </div>
       )}
+      {hasPendingAddition(order) && (
+        <div className="text-[11px] font-medium text-amber-700">
+          + إضافة بانتظار الدفع: {fmtMoney(pendingTotal)} {currency}
+          {pendingDiscount > 0 ? ` (بعد خصم ${fmtMoney(pendingDiscount)})` : ""}
+        </div>
+      )}
     </div>
   );
 }
+
 
 
 
@@ -149,14 +164,19 @@ function OrdersPage() {
     onError: (e) => toast.error(e instanceof Error ? e.message : "فشل تأكيد الدفع."),
   });
 
-  /** Fulfilment (تجهيز/شحن/تسليم) is blocked until the payment is confirmed. */
+  /**
+   * Fulfilment (تجهيز/شحن/تسليم) is blocked until the payment is confirmed —
+   * including the payment of a later, still unpaid addition.
+   */
   const guardedStatus = (o: OrderRow, status: "prepared" | "shipped" | "delivered") => {
-    if (!canStartFulfillment(o.payment_status)) {
-      toast.error(PAYMENT_REQUIRED_MESSAGE);
+    const gate = canStartFulfillmentForOrder(o);
+    if (!gate.ok) {
+      toast.error(gate.message);
       return;
     }
     statusMut.mutate({ id: o.id, status });
   };
+
 
   const rows: OrderRow[] = q.data ?? [];
 
@@ -238,29 +258,39 @@ function OrdersPage() {
                           </span>
                         </td>
                         <td className="px-4 py-3">
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                              o.payment_status === "pending"
-                                ? "bg-amber-100 text-amber-800"
-                                : "bg-emerald-100 text-emerald-800"
-                            }`}
-                            title={o.payment_method ?? ""}
-                          >
-                            {o.payment_status === "pending" ? "بانتظار الدفع" : "مدفوع"}
-                          </span>
+                          <div className="flex flex-col items-start gap-1">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                                o.payment_status === "pending"
+                                  ? "bg-amber-100 text-amber-800"
+                                  : "bg-emerald-100 text-emerald-800"
+                              }`}
+                              title={o.payment_method ?? ""}
+                            >
+                              {o.payment_status === "pending" ? "بانتظار الدفع" : "مدفوع"}
+                            </span>
+                            {hasPendingAddition(o) && (
+                              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800">
+                                إضافة بانتظار الدفع
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">{fmtDate(o.created_at)}</td>
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap gap-1.5">
-                            {o.payment_status === "pending" && o.status !== "cancelled" && (
+                            {(o.payment_status === "pending" || hasPendingAddition(o)) &&
+                              o.status !== "cancelled" && (
                               <Button
                                 size="sm"
                                 disabled={payMut.isPending}
                                 onClick={() => payMut.mutate({ id: o.id })}
                               >
-                                <BadgeCheck className="ml-1 h-3.5 w-3.5" /> تأكيد الدفع
+                                <BadgeCheck className="ml-1 h-3.5 w-3.5" />{" "}
+                                {o.payment_status === "pending" ? "تأكيد الدفع" : "تأكيد دفع الإضافة"}
                               </Button>
                             )}
+
                             <Button
                               size="sm"
                               variant="outline"
@@ -335,6 +365,39 @@ function OrdersPage() {
                                 </tbody>
                               </table>
                             </div>
+                            {hasPendingAddition(o) && (
+                              <>
+                                <div className="mt-4 mb-2 text-[11px] font-semibold uppercase tracking-wider text-amber-700">
+                                  إضافة بانتظار تأكيد الدفع
+                                </div>
+                                <div className="overflow-x-auto rounded-lg border border-amber-300/70 bg-amber-50/40">
+                                  <table className="w-full text-right text-xs">
+                                    <thead className="bg-amber-100/60 text-[10px] uppercase text-amber-800">
+                                      <tr>
+                                        <th className="px-3 py-2">المنتج</th>
+                                        <th className="px-3 py-2">اللون</th>
+                                        <th className="px-3 py-2">المقاس</th>
+                                        <th className="px-3 py-2">الكمية</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-amber-200/70">
+                                      {pendingItemsOf(o).map((it, i) => (
+                                        <tr key={i}>
+                                          <td className="px-3 py-2 font-medium">{String(it.product_name ?? "—")}</td>
+                                          <td className="px-3 py-2">{String(it.color ?? "—")}</td>
+                                          <td className="px-3 py-2">{String(it.size ?? "—")}</td>
+                                          <td className="px-3 py-2">{String(it.quantity ?? "—")}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                                <div className="mt-2 text-[11px] text-amber-700">
+                                  قيمة الإضافة: {fmtMoney(Number(o.pending_total ?? 0))} — لا يُخصم مخزونها ولا تُحتسب مدفوعة قبل تأكيد الدفع.
+                                </div>
+                              </>
+                            )}
+
                             <div className="mt-3 grid gap-3 sm:grid-cols-2">
                               <div>
                                 <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">ملاحظات العميل</div>

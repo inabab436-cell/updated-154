@@ -1349,20 +1349,31 @@ export const Route = createFileRoute("/api/chat-ai")({
           })();
 
           const conversationOrdersPromise = (async () => {
-            try {
-              const { data: orders } = await supabase
+            const base =
+              "order_number, items, notes, status, payment_status, payment_method, payment_confirmed_at, subtotal_price, discount_amount, shipping_cost, total_price, created_at, stock_deducted";
+            const read = (columns: string) =>
+              supabase
                 .from("orders")
-                .select(
-                  "order_number, items, notes, status, payment_status, payment_method, payment_confirmed_at, subtotal_price, discount_amount, shipping_cost, total_price, created_at, stock_deducted",
-                )
+                .select(columns)
                 .eq("conversation_id", conversation_id)
                 .order("created_at", { ascending: false });
-              return (orders ?? []) as Array<Record<string, unknown>>;
+            try {
+              // Databases that already carry the unpaid-addition columns expose
+              // the pending part; older ones fall back to the base columns.
+              const withPending = await read(
+                `${base}, pending_items, pending_subtotal, pending_discount, pending_total, pending_since`,
+              );
+              if (!withPending.error) {
+                return (withPending.data ?? []) as unknown as Array<Record<string, unknown>>;
+              }
+              const { data: orders } = await read(base);
+              return (orders ?? []) as unknown as Array<Record<string, unknown>>;
             } catch (_) {
               // orders table may not exist; skip silently.
               return [] as Array<Record<string, unknown>>;
             }
           })();
+
 
           // ALL orders of THIS customer (any conversation), with every detail
           // the agent may be asked about. Scoped to (merchant_id, customer_id)
@@ -1576,6 +1587,9 @@ export const Route = createFileRoute("/api/chat-ai")({
             conversationOrderRows = rows;
             latestConversationOrder = rows.length ? rows[0]! : null;
             if (rows.length) {
+              const { hasPendingAddition, pendingItemsOf, pendingTotalsOf } = await import(
+                "@/lib/order-pending-additions"
+              );
 
               const lines = rows.map((o) => {
                 const items = Array.isArray(o.items) ? (o.items as Array<Record<string, unknown>>) : [];
@@ -1583,26 +1597,50 @@ export const Route = createFileRoute("/api/chat-ai")({
                 const productName =
                   first && typeof first.product_name === "string" ? first.product_name : "-";
                 const paid = String(o.payment_status ?? "confirmed") !== "pending";
+                const pendingLines = hasPendingAddition(o as any)
+                  ? pendingItemsOf(o as any)
+                      .map((it) =>
+                        [it["product_name"], it["color"], it["size"]]
+                          .filter(Boolean)
+                          .join(" ") + ` x${it["quantity"]}`,
+                      )
+                      .join(", ")
+                  : "";
                 return (
                   `Order Number: ${o.order_number ?? "-"} | Product: ${productName} | Status: ${o.status ?? "-"}` +
                   ` | Payment method: ${o.payment_method ?? "-"}` +
                   ` | Payment: ${paid ? "CONFIRMED (paid)" : "PENDING (not paid yet)"}` +
-                  (o.total_price != null ? ` | Total: ${o.total_price}` : "")
+                  (o.total_price != null ? ` | Total (paid part): ${o.total_price}` : "") +
+                  (pendingLines
+                    ? ` | UNPAID ADDITION (waiting for payment confirmation): ${pendingLines} | Addition amount: ${pendingTotalsOf(o as any).total}`
+                    : "")
                 );
               });
               const justConfirmed = rows.filter(
                 (o) => String(o.payment_status ?? "confirmed") !== "pending",
               );
+              const withPendingAddition = rows.filter((o) => hasPendingAddition(o as any));
               existingOrdersBlock =
                 "\n\nExisting orders in this conversation (live state, always trust this over the chat history):\n" +
                 lines.join("\n") +
                 (justConfirmed.length
                   ? "\n\nPAYMENT STATE: the store team has ALREADY confirmed the payment of " +
                     justConfirmed.map((o) => String(o.order_number ?? "-")).join(", ") +
-                    ". Treat these orders as fully confirmed and paid: never ask the customer to pay again, never ask for a transfer screenshot again, never ask them to confirm the order again, and never say the order is still waiting for payment. If they ask, reassure them that the payment arrived and the order is being processed."
+                    ". Treat the ALREADY PAID part of these orders as fully confirmed: never ask the customer to pay it again, never ask for a transfer screenshot for it again, never ask them to confirm it again, and never say that part is still waiting for payment. If they ask, reassure them that the payment arrived and the order is being processed."
+                  : "") +
+                (withPendingAddition.length
+                  ? "\n\nUNPAID ADDITION: " +
+                    withPendingAddition
+                      .map(
+                        (o) =>
+                          `${o.order_number ?? "-"} (${pendingTotalsOf(o as any).total})`,
+                      )
+                      .join(", ") +
+                    ". This part was added AFTER the payment was confirmed, so it is NOT paid. Only its own amount is due — never re-ask for the already paid amount, and never treat the addition as paid until the store confirms it."
                   : "") +
                 "\nNever create a second order for an order listed here. If the customer asks to add products, update that same order through create_order.";
             }
+
           }
 
           // Full per-order knowledge for THIS customer (all their orders).
@@ -2647,6 +2685,164 @@ export const Route = createFileRoute("/api/chat-ai")({
             } catch (e) {
               console.error("[chat-ai] already-deducted reconciliation skipped");
             }
+
+            // ----------------------------------------------------------------
+            // ADDITION ON AN ALREADY PAID ORDER
+            // The paid part (items + its amounts + its stock) is frozen. The
+            // new lines are stored as an UNPAID addition on the same order and
+            // wait for the merchant's "تأكيد الدفع", which deducts their stock
+            // through confirm_order_payment. Only the addition is priced, so an
+            // offer applies to the new lines only and the old discount stays.
+            // ----------------------------------------------------------------
+            if (
+              latestConversationOrder &&
+              String(latestConversationOrder.payment_status ?? "confirmed") !== "pending"
+            ) {
+              const { pendingItemsOf, pendingTotalsOf, subtractPendingQuantities } =
+                await import("@/lib/order-pending-additions");
+              const { addOrderItemQuantities } = await import("@/lib/order-item-merge");
+              const { priceOrderItems } = await import("@/lib/order-pricing.server");
+              const { paymentDeductionPlan } = await import("@/lib/storefront-order.server");
+
+              const existingPending = pendingItemsOf(latestConversationOrder as any);
+              const additionOnly = subtractPendingQuantities(cleanedItems, existingPending);
+              if (!additionOnly.items.length) {
+                return {
+                  result: {
+                    ok: false,
+                    error: "no_additional_quantity",
+                    message:
+                      "Nothing was added: this exact quantity is already registered on the existing order as an addition that is still waiting for payment confirmation. Tell the customer in Egyptian Arabic that the addition is already registered and is waiting for the payment to be confirmed, and ask how many EXTRA pieces they want if they want more.",
+                  },
+                  createdOrderNumber: null,
+                };
+              }
+
+              const pendingItems = addOrderItemQuantities(
+                existingPending as any,
+                additionOnly.items as any,
+              );
+              const additionPricing = priceOrderItems({
+                products: merchantData.products as any,
+                offers: liveOffers,
+                items: pendingItems as any,
+              });
+              for (let i = 0; i < pendingItems.length; i++) {
+                const p = additionPricing.items[i];
+                if (!p) continue;
+                (pendingItems[i] as any).product_id = p.product_id;
+                (pendingItems[i] as any).unit_price = p.unit_price;
+                (pendingItems[i] as any).price = p.unit_price;
+                (pendingItems[i] as any).line_total = p.line_total;
+              }
+
+              const { data: addData, error: addErr } = await supabase.rpc(
+                "add_pending_order_items",
+                {
+                  p_order_number: String(latestConversationOrder.order_number ?? ""),
+                  p_conversation_id: conversation_id,
+                  p_merchant_id: merchant_id,
+                  p_pending_items: pendingItems,
+                  p_pending_subtotal: additionPricing.subtotal,
+                  p_pending_discount: additionPricing.discount_total,
+                  p_pending_total: additionPricing.total,
+                },
+              );
+              if (addErr) {
+                console.error("[chat-ai] pending addition failed", addErr.message);
+                return {
+                  result: {
+                    ok: false,
+                    error: "db_insert_failed",
+                    message:
+                      "The addition could not be saved. Do NOT tell the customer about any system or error, do NOT ask them to repeat anything, and do NOT say the addition is confirmed. Tell them naturally that you are registering the addition and will get back to them.",
+                  },
+                  createdOrderNumber: null,
+                };
+              }
+              const addRes = (addData ?? {}) as any;
+              if (addRes.ok === false && addRes.error === "insufficient_stock") {
+                return {
+                  result: {
+                    ok: false,
+                    error: "insufficient_stock",
+                    shortages: Array.isArray(addRes.shortages) ? addRes.shortages : [],
+                    message:
+                      "The addition was REJECTED because the requested quantity is no longer available. Nothing was saved and no stock was deducted. Tell the customer, for each listed item, the product, color, size, the quantity they asked for and the quantity available right now, and offer the available quantity or an alternative.",
+                  },
+                  createdOrderNumber: null,
+                };
+              }
+              if (addRes.ok === false) {
+                console.error("[chat-ai] pending addition rejected", addRes.error);
+                return {
+                  result: {
+                    ok: false,
+                    error: String(addRes.error ?? "addition_failed"),
+                    message:
+                      "The addition was not saved. Tell the customer naturally that you are checking their request and will get back to them. Do NOT say the addition is confirmed.",
+                  },
+                  createdOrderNumber: null,
+                };
+              }
+
+              const orderNumberForAddition = String(latestConversationOrder.order_number ?? "");
+              const additionCurrency = additionPricing.currency ?? "";
+              const previousPendingTotal = pendingTotalsOf(latestConversationOrder as any).total;
+              const newlyDue =
+                Math.round((additionPricing.total - previousPendingTotal) * 100) / 100;
+              const additionPlan = paymentDeductionPlan(chosenMethod?.behavior);
+
+              await supabase.from("notifications").insert({
+                type: "new_order",
+                conversation_id,
+                message: `إضافة جديدة على الطلب ${orderNumberForAddition} بانتظار تأكيد الدفع (${additionPricing.total} ${additionCurrency})`.trim(),
+                is_read: false,
+              });
+
+              if (additionPlan.requiresPayment) {
+                const { error: parkErr } = await supabase
+                  .from("conversations")
+                  .update({ status: "awaiting_payment", agent_enabled: false })
+                  .eq("id", conversation_id);
+                if (parkErr) {
+                  await supabase
+                    .from("conversations")
+                    .update({ agent_enabled: false })
+                    .eq("id", conversation_id);
+                }
+                await supabase.from("notifications").insert({
+                  type: "human_needed",
+                  conversation_id,
+                  message: `عميل بانتظار استكمال دفع إضافة على الطلب ${orderNumberForAddition}`,
+                  is_read: false,
+                });
+              }
+
+              return {
+                result: {
+                  ok: true,
+                  order_number: orderNumberForAddition,
+                  addition_registered: true,
+                  addition_payment_status: "pending",
+                  addition_total: additionPricing.total,
+                  addition_discount: additionPricing.discount_total,
+                  newly_due_amount: newlyDue,
+                  currency: additionCurrency,
+                  payment_method: chosenMethod?.name ?? null,
+                  message:
+                    `The addition was registered on the SAME order ${orderNumberForAddition} as a part that is NOT paid yet. The previously paid part keeps its price, its discount and its stock exactly as confirmed — never re-charge it and never re-open it. Tell the customer, in Egyptian Arabic, what was added and that the amount due for the addition ONLY is ${additionPricing.total} ${additionCurrency}` +
+                    (additionPlan.requiresPayment && chosenMethod
+                      ? `, then give them the payment instructions of ${chosenMethod.name}${chosenMethod.instructions ? `: ${chosenMethod.instructions}` : ""} and tell them it will be confirmed once the payment is received.`
+                      : ", and tell them it will be confirmed shortly.") +
+                    " Never say the addition is already paid, and never mention any system, tool or internal detail.",
+                },
+                createdOrderNumber: orderNumberForAddition,
+                manualHandover: additionPlan.requiresPayment,
+              };
+            }
+
+
 
             const customerNote =
               typeof args.notes === "string" && args.notes.trim()

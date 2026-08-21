@@ -99,14 +99,20 @@ export async function confirmPendingOrdersForConversation(
 ): Promise<ConfirmationSummary> {
   const { data: orders, error } = await admin
     .from("orders")
-    .select("id, order_number, payment_status, status")
+    .select("*")
     .eq("conversation_id", opts.conversationId)
     .eq("merchant_id", opts.merchantId);
   if (error) throw new Error(error.message);
 
+  const { hasPendingAddition } = await import("@/lib/order-pending-additions");
+  // Both an unpaid order AND a paid order carrying an unpaid ADDITION are
+  // confirmed through the same RPC.
   const pending = ((orders ?? []) as any[]).filter(
-    (o) => (o.payment_status ?? "confirmed") === "pending" && o.status !== "cancelled",
+    (o) =>
+      o.status !== "cancelled" &&
+      ((o.payment_status ?? "confirmed") === "pending" || hasPendingAddition(o)),
   );
+
 
   const results: ConfirmationOutcome[] = [];
   const confirmedIds: string[] = [];

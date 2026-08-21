@@ -44,12 +44,19 @@ export interface OrderRow {
   /** 'pending' = manual payment not confirmed yet → no stock deducted. */
   payment_status: string;
   payment_confirmed_at: string | null;
-  /** Final value of the order: products − discount + shipping. */
+  /** Final value of the CONFIRMED (paid) part: products − discount + shipping. */
   total_price: number | null;
   subtotal_price: number | null;
   discount_amount: number | null;
   shipping_cost: number | null;
+  /** Lines added AFTER the payment was confirmed — not paid, not deducted. */
+  pending_items?: OrderItem[];
+  pending_subtotal?: number | null;
+  pending_discount?: number | null;
+  pending_total?: number | null;
+  pending_since?: string | null;
 }
+
 
 
 
@@ -90,6 +97,12 @@ export const listOrders = createServerFn({ method: "GET" }).handler(
       subtotal_price: r.subtotal_price ?? null,
       discount_amount: r.discount_amount ?? null,
       shipping_cost: r.shipping_cost ?? null,
+      pending_items: Array.isArray(r.pending_items) ? r.pending_items : [],
+      pending_subtotal: r.pending_subtotal ?? 0,
+      pending_discount: r.pending_discount ?? 0,
+      pending_total: r.pending_total ?? 0,
+      pending_since: r.pending_since ?? null,
+
     })) as OrderRow[];
   },
 );
@@ -183,7 +196,7 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
 
     const { data: order, error: oErr } = await admin
       .from("orders")
-      .select("id, conversation_id, merchant_id, status, payment_status")
+      .select("*")
       .eq("id", data.id)
       .maybeSingle();
     if (oErr) throw new Error(oErr.message);
@@ -191,10 +204,12 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
       throw new Error("الطلب غير موجود.");
     }
 
-    const { canStartFulfillment, PAYMENT_REQUIRED_MESSAGE } = await import("@/lib/order-status-gate");
-    if (!canStartFulfillment((order as any).payment_status)) {
-      throw new Error(PAYMENT_REQUIRED_MESSAGE);
+    const { canStartFulfillmentForOrder } = await import("@/lib/order-status-gate");
+    const gate = canStartFulfillmentForOrder(order as any);
+    if (!gate.ok) {
+      throw new Error(gate.message);
     }
+
 
     const nowIso = new Date().toISOString();
     const patch: Record<string, unknown> = { status: data.status };
