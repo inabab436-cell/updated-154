@@ -20,7 +20,6 @@ export interface PendingAdditionRow {
   pending_discount?: unknown;
   pending_total?: unknown;
   pending_since?: unknown;
-  [key: string]: unknown;
 }
 
 const num = (v: unknown): number => {
