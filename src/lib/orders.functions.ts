@@ -183,7 +183,7 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
 
     const { data: order, error: oErr } = await admin
       .from("orders")
-      .select("id, conversation_id, merchant_id, status, payment_status")
+      .select("*")
       .eq("id", data.id)
       .maybeSingle();
     if (oErr) throw new Error(oErr.message);
@@ -191,10 +191,12 @@ export const updateOrderStatus = createServerFn({ method: "POST" })
       throw new Error("الطلب غير موجود.");
     }
 
-    const { canStartFulfillment, PAYMENT_REQUIRED_MESSAGE } = await import("@/lib/order-status-gate");
-    if (!canStartFulfillment((order as any).payment_status)) {
-      throw new Error(PAYMENT_REQUIRED_MESSAGE);
+    const { canStartFulfillmentForOrder } = await import("@/lib/order-status-gate");
+    const gate = canStartFulfillmentForOrder(order as any);
+    if (!gate.ok) {
+      throw new Error(gate.message);
     }
+
 
     const nowIso = new Date().toISOString();
     const patch: Record<string, unknown> = { status: data.status };
