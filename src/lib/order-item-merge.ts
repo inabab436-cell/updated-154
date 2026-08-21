@@ -45,3 +45,37 @@ export function mergeOrderItemTotals<T extends MergeableOrderItem>(
   }
   return merged;
 }
+
+/**
+ * SUMS the quantities (and line totals) of two baskets instead of replacing
+ * them. Used for an unpaid ADDITION on a paid order: the caller passes the
+ * quantity that is genuinely new, which must be added on top of whatever is
+ * already registered as pending.
+ */
+export function addOrderItemQuantities<T extends MergeableOrderItem>(
+  existingItems: T[],
+  addedItems: T[],
+): T[] {
+  const merged = (existingItems ?? []).map((item) => ({ ...item }));
+  for (const added of addedItems ?? []) {
+    const index = merged.findIndex((item) => sameLine(item, added));
+    const addedQty = Number(added.quantity ?? 0);
+    if (index >= 0) {
+      const current = merged[index]!;
+      const currentQty = Number(current.quantity ?? 0);
+      const currentTotal = Number((current as Record<string, unknown>)["line_total"] ?? 0);
+      const addedTotal = Number((added as Record<string, unknown>)["line_total"] ?? 0);
+      merged[index] = {
+        ...current,
+        ...added,
+        quantity: (Number.isFinite(currentQty) ? currentQty : 0) + (Number.isFinite(addedQty) ? addedQty : 0),
+        line_total:
+          (Number.isFinite(currentTotal) ? currentTotal : 0) +
+          (Number.isFinite(addedTotal) ? addedTotal : 0),
+      } as T;
+    } else {
+      merged.push({ ...added });
+    }
+  }
+  return merged;
+}
