@@ -97,6 +97,12 @@ export const listOrders = createServerFn({ method: "GET" }).handler(
       subtotal_price: r.subtotal_price ?? null,
       discount_amount: r.discount_amount ?? null,
       shipping_cost: r.shipping_cost ?? null,
+      pending_items: Array.isArray(r.pending_items) ? r.pending_items : [],
+      pending_subtotal: r.pending_subtotal ?? 0,
+      pending_discount: r.pending_discount ?? 0,
+      pending_total: r.pending_total ?? 0,
+      pending_since: r.pending_since ?? null,
+
     })) as OrderRow[];
   },
 );
